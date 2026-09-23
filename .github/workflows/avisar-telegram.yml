@@ -55,6 +55,8 @@ jobs:
           PROJETO: ${{ inputs.projeto }}
           RESULTADOS: ${{ inputs.resultados }}
           PRINCIPAIS: ${{ inputs.ramos_silenciosos }}
+          # Só existe em pull_request; fora disso fica vazio e usa-se o GITHUB_REF_NAME.
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           # Um aviso que falta não pode pintar a CI de vermelho e bloquear merges --
           # seria o contrário do que vem fazer.
@@ -62,6 +64,12 @@ jobs:
             echo "Sem TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID: nada a avisar."
             exit 0
           fi
+
+          # 🔴 Achatar primeiro. O `toJSON(needs)` vem formatado em VÁRIAS linhas, e o
+          # grep trabalha linha a linha: o padrão atravessa duas e nunca casava, por isso
+          # a linha dos jobs saía vazia nas primeiras mensagens. Os meus testes passaram
+          # porque lhes dei JSON numa linha só -- testei o que escrevi, não o que chega.
+          RESULTADOS=$(printf '%s' "$RESULTADOS" | tr -d '\n')
 
           # Os resultados vêm como JSON: {"lint":{"result":"success"},...}
           FALHOU=$(printf '%s' "$RESULTADOS" | grep -oE '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled)"' | head -1)
@@ -73,11 +81,15 @@ jobs:
           # caracteres e alterna entre eles, por isso com três jobs saía
           # "lint: success testes: failure·composer: success". Apanhado a testar.
 
+          # 🔴 Num evento de `pull_request`, o GITHUB_REF_NAME é "<numero>/merge" e não o
+          # ramo -- as primeiras mensagens diziam "Ramo: 428/merge", que não diz nada a
+          # quem lê. O HEAD_REF traz o ramo a sério, e só existe em PRs.
+          RAMO_CRU="${HEAD_REF:-$GITHUB_REF_NAME}"
+
           # Dois valores de propósito: o cru serve para decidir, o escapado para mostrar.
           # O git deixa passar & < > nos nomes de ramo, e um deles num corpo HTML faz a
           # API do Telegram recusar a mensagem inteira. Comparar pelo escapado seria
           # subtilmente errado, por isso a lógica usa sempre o cru.
-          RAMO_CRU="${GITHUB_REF_NAME}"
           RAMO=$(printf '%s' "$RAMO_CRU" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
 
           # Verde fora dos ramos principais não vale mensagem: a utilidade disto é
@@ -92,16 +104,23 @@ jobs:
             CABECA="🔴 <b>CI falhou</b>"
           fi
 
-          # 🔴 O assunto do commit é texto livre e vai num corpo HTML. Um & ou um <
-          # fazem a API do Telegram recusar a mensagem inteira, e o aviso perde-se em
-          # silêncio. Escapar é obrigatório, não é cuidado a mais.
-          ASSUNTO=$(git log -1 --format=%s 2>/dev/null | cut -c1-120 \
+          # 🔴 Em PRs, o checkout traz o commit de MERGE que o GitHub cria para testar, e
+          # `git log -1` dava "Merge fc0b7ad into a1497c7" -- inútil para quem lê. O
+          # segundo pai (HEAD^2) é o commit verdadeiro do ramo. Fora de PRs não há
+          # segundo pai e usa-se o HEAD, como sempre.
+          COMMIT_REAL=$(git rev-parse --verify --quiet HEAD^2 || echo HEAD)
+
+          # O assunto do commit é texto livre e vai num corpo HTML. Um & ou um < fazem a
+          # API do Telegram recusar a mensagem inteira, e o aviso perde-se em silêncio.
+          # Escapar é obrigatório, não é cuidado a mais.
+          ASSUNTO=$(git log -1 --format=%s "$COMMIT_REAL" 2>/dev/null | cut -c1-120 \
             | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+          SHA_CURTO=$(git rev-parse --short=7 "$COMMIT_REAL" 2>/dev/null || printf '%s' "${GITHUB_SHA:0:7}")
 
           TEXTO="${CABECA} — ${PROJETO}
 
           Ramo: <code>${RAMO}</code>
-          Commit: <code>${GITHUB_SHA:0:7}</code>
+          Commit: <code>${SHA_CURTO}</code>
           ${ASSUNTO}
 
           ${DETALHE}
