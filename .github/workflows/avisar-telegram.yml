@@ -1,0 +1,111 @@
+name: Avisar no Telegram
+
+# Workflow reutilizável: o aviso de CI vive aqui uma vez e os repositórios chamam-no.
+#
+# Antes isto eram 60 linhas dentro do `tests.yml` do backend. Copiá-las para os outros
+# dez repositórios seria garantir que divergem — bastava alguém corrigir num sítio.
+#
+# Como se usa, no fim do workflow do repositório:
+#
+#   avisar:
+#     needs: [lint, testes]          # os jobs que interessam
+#     if: always()                   # sem isto não avisa quando falha, que é o que importa
+#     uses: Va-de-Pop/.github/.github/workflows/avisar-telegram.yml@main
+#     with:
+#       projeto: backend
+#       resultados: ${{ toJSON(needs) }}
+#     secrets: inherit               # TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID são da organização
+#
+# 🔴 `secrets: inherit` é o que faz isto funcionar sem configurar nada repo a repo. Os
+# secrets nunca entram neste ficheiro — ele é público, como todo o repo `.github`.
+
+on:
+  workflow_call:
+    inputs:
+      projeto:
+        description: 'Nome a mostrar na mensagem (ex.: backend, support-system)'
+        required: true
+        type: string
+      resultados:
+        description: 'toJSON(needs) do workflow que chama — os jobs e como correram'
+        required: true
+        type: string
+      ramos_silenciosos:
+        description: 'Ramos onde uma corrida VERDE vale mensagem. Os vermelhos avisam sempre, em qualquer ramo.'
+        required: false
+        type: string
+        default: 'dev,master,main'
+
+jobs:
+  avisar:
+    name: Avisar no Telegram
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mandar
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PROJETO: ${{ inputs.projeto }}
+          RESULTADOS: ${{ inputs.resultados }}
+          PRINCIPAIS: ${{ inputs.ramos_silenciosos }}
+        run: |
+          # Um aviso que falta não pode pintar a CI de vermelho e bloquear merges --
+          # seria o contrário do que vem fazer.
+          if [ -z "$TOKEN" ] || [ -z "$CHAT" ]; then
+            echo "Sem TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID: nada a avisar."
+            exit 0
+          fi
+
+          # Os resultados vêm como JSON: {"lint":{"result":"success"},...}
+          FALHOU=$(printf '%s' "$RESULTADOS" | grep -oE '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled)"' | head -1)
+          DETALHE=$(printf '%s' "$RESULTADOS" \
+            | grep -oE '"[a-zA-Z0-9_-]+"[[:space:]]*:[[:space:]]*\{[^}]*"result"[[:space:]]*:[[:space:]]*"[a-z]+"' \
+            | sed -E 's/"([a-zA-Z0-9_-]+)".*"result"[[:space:]]*:[[:space:]]*"([a-z]+)"/\1: \2/' \
+            | awk 'NR>1{printf " · "} {printf "%s", $0} END{print ""}')
+          # awk e não `paste -sd ' · '`: o paste trata o delimitador como uma LISTA de
+          # caracteres e alterna entre eles, por isso com três jobs saía
+          # "lint: success testes: failure·composer: success". Apanhado a testar.
+
+          # Dois valores de propósito: o cru serve para decidir, o escapado para mostrar.
+          # O git deixa passar & < > nos nomes de ramo, e um deles num corpo HTML faz a
+          # API do Telegram recusar a mensagem inteira. Comparar pelo escapado seria
+          # subtilmente errado, por isso a lógica usa sempre o cru.
+          RAMO_CRU="${GITHUB_REF_NAME}"
+          RAMO=$(printf '%s' "$RAMO_CRU" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+
+          # Verde fora dos ramos principais não vale mensagem: a utilidade disto é
+          # notar-se quando aparece, e um canal que fala sempre deixa de se ler.
+          if [ -z "$FALHOU" ]; then
+            case ",${PRINCIPAIS}," in
+              *",${RAMO_CRU},"*) ;;
+              *) echo "Corrida verde fora de ${PRINCIPAIS}: não vale uma mensagem."; exit 0 ;;
+            esac
+            CABECA="🟢 <b>CI passou</b>"
+          else
+            CABECA="🔴 <b>CI falhou</b>"
+          fi
+
+          # 🔴 O assunto do commit é texto livre e vai num corpo HTML. Um & ou um <
+          # fazem a API do Telegram recusar a mensagem inteira, e o aviso perde-se em
+          # silêncio. Escapar é obrigatório, não é cuidado a mais.
+          ASSUNTO=$(git log -1 --format=%s 2>/dev/null | cut -c1-120 \
+            | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+
+          TEXTO="${CABECA} — ${PROJETO}
+
+          Ramo: <code>${RAMO}</code>
+          Commit: <code>${GITHUB_SHA:0:7}</code>
+          ${ASSUNTO}
+
+          ${DETALHE}
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          TEXTO=$(printf '%s' "$TEXTO" | sed 's/^[[:space:]]*//')
+
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -d chat_id="$CHAT" -d parse_mode="HTML" -d disable_web_page_preview=true \
+            --data-urlencode text="$TEXTO" \
+            | grep -q '"ok":true' && echo "Avisado." || echo "O Telegram recusou a mensagem."
