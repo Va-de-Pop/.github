@@ -39,10 +39,14 @@ on:
 jobs:
   avisar:
     name: Avisar no Telegram
-    runs-on: ubuntu-latest
+    # 🔴 Nos runners próprios, não em `ubuntu-latest`. A franquia de Actions do GitHub
+    # está esgotada nesta organização, e um job que a peça morre em 2 segundos sem
+    # runner atribuído -- parece CI partida e não é. Foi assim que este falhou à
+    # primeira. `pop` chega: os três runners têm php, node, python e android.
+    runs-on: [self-hosted, pop]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Mandar
         env:
