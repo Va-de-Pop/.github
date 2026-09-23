@@ -14,10 +14,14 @@ name: Avisar no Telegram
 #     with:
 #       projeto: backend
 #       resultados: ${{ toJSON(needs) }}
-#     secrets: inherit               # TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID são da organização
+#     secrets:                       # um a um, NUNCA `inherit` -- ver a nota abaixo
+#       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+#       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 #
-# 🔴 `secrets: inherit` é o que faz isto funcionar sem configurar nada repo a repo. Os
-# secrets nunca entram neste ficheiro — ele é público, como todo o repo `.github`.
+# 🔴 Os secrets são da organização, por isso não é preciso configurar nada repo a repo.
+# Mas passam-se UM A UM e nunca com `inherit`: este ficheiro é público, e `inherit`
+# entregava-lhe todos os secrets de quem chama — incluindo a chave de assinatura das
+# apps e as credenciais da Play Store, que um aviso de CI não tem nada que ver.
 
 on:
   workflow_call:
@@ -35,6 +39,20 @@ on:
         required: false
         type: string
         default: 'dev,master,main'
+
+    # 🔴 Declarados um a um, de propósito. Com `secrets: inherit` o repositório que
+    # chama entrega TODOS os seus secrets a este workflow -- e este vive num repo
+    # PÚBLICO. No user-app isso seria a chave de assinatura da app
+    # (KEYSTORE_BASE64, KEY_PASSWORD, STORE_PASSWORD) e as credenciais da Play
+    # Store. Um aviso de CI não precisa de nada disso.
+    #
+    # `required: false` porque um aviso que falta não pode bloquear merges: sem os
+    # secrets, o job sai em silêncio.
+    secrets:
+      TELEGRAM_BOT_TOKEN:
+        required: false
+      TELEGRAM_CHAT_ID:
+        required: false
 
 jobs:
   avisar:
